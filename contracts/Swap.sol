@@ -41,6 +41,11 @@ contract Swap is OwnerPausableUpgradeable, ReentrancyGuardUpgradeable {
     // getTokenIndex function also relies on this mapping to retrieve token index.
     mapping(address => uint8) private tokenIndexes;
 
+
+    //liquiditySwap Contract Associated With Pool
+    address private liquiditySwapAddr;
+
+
     /*** EVENTS ***/
 
     // events replicated from SwapUtils to make the ABI easier for dumb
@@ -192,7 +197,23 @@ contract Swap is OwnerPausableUpgradeable, ReentrancyGuardUpgradeable {
         _;
     }
 
+    /**
+     * @dev Modifier to check that msg.sender is liquidity swap contract set
+     */
+
+    modifier onlyLiquiditySwap() {
+        require(msg.sender == liquiditySwapAddr, "only liquidity swap");
+        _;
+    }
+
     /*** VIEW FUNCTIONS ***/
+
+    function getPooledTokens() external view virtual returns (address[]) {
+        return swapStorage.pooledTokens;        
+    }
+    function getLpToken() external view virtual returns (address) {
+        return address(swapStorage.lpToken);
+    }
 
     /**
      * @dev Return A, the amplification coefficient * n * (n - 1)
@@ -478,7 +499,49 @@ contract Swap is OwnerPausableUpgradeable, ReentrancyGuardUpgradeable {
         return swapStorage.removeLiquidityImbalance(amounts, maxBurnAmount);
     }
 
+    function _xp(
+        uint256[] memory balances,
+        uint256[] memory precisionMultipliers
+    ) internal pure returns (uint256[] memory) {
+        uint256 numTokens = balances.length;
+        require(
+            numTokens == precisionMultipliers.length,
+            "Balances must match multipliers"
+        );
+        uint256[] memory xp = new uint256[](numTokens);
+        for (uint256 i = 0; i < numTokens; i++) {
+            xp[i] = balances[i].mul(precisionMultipliers[i]);
+        }
+        return xp;
+    }
+
+    function mintForLiquidtySwap(uint256 underlyingDesiredTokenAmount) external virtual onlyLiquiditySwap {
+        /*
+
+            mintmount = totalLPTokenSupply * (underlyingDesiredTokenAmount / total amount underlying tokens);
+        */
+
+        uint256[] normedBalances = _xp(swapStorage.balances, swapStorage.tokenPrecisionMultipliers);
+
+        uint256 normedBalanceSum = 0;
+        for(uint i=0;i<normedBalances.length;i++){
+            normedBalanceSum += normedBalances[i];
+        }
+
+        require(underlyingDesiredTokenAmount < normedBalanceSum, "exceeds balances");
+        uint256 toMint = swapStorage.lpToken.totalSupply().mul(underlyingDesiredTokenAmount).div(normedBalanceSum);
+        swapStorage.lpToken.mint(msg.sender, toMint);
+    }
+
     /*** ADMIN FUNCTIONS ***/
+
+    /**
+     * @dev Update the admin fee. Admin fee takes portion of the swap fee.
+     * @param addr new liquiditySwapAddress for pool
+     */
+    function setLiquiditySwapAddr(address addr) external onlyOwner {
+        liquiditySwapAddr = addr;
+    }
 
     /**
      * @dev Withdraw all admin fees to the contract owner
